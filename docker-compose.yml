@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  hpc-exporter:
+    build: .
+    image: hpc-exporter:latest
+    container_name: hpc-exporter
+    restart: unless-stopped
+    network_mode: host        # shares host network stack; /proc/net/dev shows host interfaces
+    pid: host                 # shares host PID namespace for /proc/<pid> process counts
+
+    # nvidia-smi explanation:
+    #   The binary is NOT installed in the image.  The NVIDIA Container Toolkit
+    #   (nvidia-container-toolkit on the host) bind-mounts the host's nvidia driver
+    #   files — including /usr/bin/nvidia-smi — into the container at runtime when
+    #   `runtime: nvidia` (or deploy.resources below) is specified.
+    #   Install on host: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    runtime: nvidia           # requires NVIDIA Container Toolkit on the host
+
+    cap_add:
+      - SYS_RAWIO             # required by ipmitool for IPMI/DCMI power reading
+
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+      # Bind-mount centrifydc binaries from the host if Centrify is installed.
+      - /usr/sbin/adinfo:/usr/sbin/adinfo:ro
+      - /usr/sbin/centrifydc:/usr/sbin/centrifydc:ro
+
+    environment:
+      PORT: "9009"
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      IPMI_ENABLED: "true"
+      NVIDIA_ENABLED: "true"
+      CENTRIFY_ENABLED: "true"
+      PBS_ENABLED: "true"
+      # Pass through NVIDIA visibility so nvidia-smi can enumerate GPUs.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
