@@ -1,0 +1,124 @@
+# Prometheus alert rules for hexporter v1.
+# Add to prometheus.yml:
+#   rule_files:
+#     - /etc/prometheus/rules/hexporter-alerts.yml
+# Check:  promtool check rules hexporter-alerts.yml
+#
+# Idle = a job holds the GPU and its utilization stayed at 0 % for the whole
+# window, and the job has held that GPU for the whole window (so a job that is
+# still starting or loading a model is not flagged).
+groups:
+  - name: hexporter-gpu-idle
+    interval: 1m
+    rules:
+      - alert: GPUAllocatedIdle
+        expr: |
+          max by (instance, gpu_uuid, gpu_index, jobid, user, queue, job_name, framework) (
+            (max without (source) (hpc_gpu_job_info{jobid!="none"}))
+            * on (instance, gpu_uuid) group_left ()
+            (max_over_time(hpc_gpu_utilization_percent[1h]) == 0)
+          )
+          and on (instance, gpu_uuid, jobid)
+          (sum by (instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[1h])) >= 55)
+        labels:
+          severity: info
+        annotations:
+          summary: "Idle GPU {{ $labels.gpu_index }} on {{ $labels.instance }}: job {{ $labels.jobid }} ({{ $labels.user }})"
+          description: >-
+            GPU {{ $labels.gpu_index }} on {{ $labels.instance }} is held by PBS job {{ $labels.jobid }}
+            (user {{ $labels.user }}, queue {{ $labels.queue }}, name {{ $labels.job_name }},
+            framework {{ $labels.framework }}) and has been at 0 % utilization for 1 hour.
+
+      - alert: PBSJobAllGPUsIdle
+        expr: |
+          (
+            count by (jobid, user, queue, job_name) (
+              (max without (source) (hpc_gpu_job_info{jobid!="none"}))
+              * on (instance, gpu_uuid) group_left ()
+              (max_over_time(hpc_gpu_utilization_percent[2h]) == 0)
+              and on (instance, gpu_uuid, jobid)
+              (sum by (instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[2h])) >= 110)
+            )
+          )
+          == on (jobid, user, queue, job_name)
+          count by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{jobid!="none"}))
+        labels:
+          severity: warning
+        annotations:
+          summary: "PBS job {{ $labels.jobid }} ({{ $labels.user }}) has used none of its {{ $value }} GPUs for 2 hours"
+          description: >-
+            Every GPU held by job {{ $labels.jobid }} (user {{ $labels.user }}, queue {{ $labels.queue }},
+            name {{ $labels.job_name }}) has been at 0 % utilization for 2 hours.
+
+  - name: hexporter-gpu-health
+    rules:
+      - alert: GPUXidError
+        expr: hpc_gpu_last_xid != 0 and changes(hpc_gpu_last_xid[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "XID {{ $value }} on {{ $labels.instance }} GPU {{ $labels.gpu_index }}"
+
+      - alert: GPUUncorrectedECC
+        expr: increase(hpc_gpu_ecc_errors_uncorrected_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Uncorrected ECC errors on {{ $labels.instance }} GPU {{ $labels.gpu_index }}"
+
+      - alert: GPURowRemapFailure
+        expr: hpc_gpu_row_remap_failure > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Row remap failure on {{ $labels.instance }} GPU {{ $labels.gpu_index }}: reset or RMA needed"
+
+      - alert: GPUThermalThrottling
+        expr: rate(hpc_gpu_thermal_violation_seconds_total[10m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} GPU {{ $labels.gpu_index }} thermal-throttled {{ $value | humanizePercentage }} of the time"
+
+      - alert: DCGMDown
+        expr: hpc_gpu_dcgm_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: DCGM not reachable, GPU pipe and health metrics missing (nvidia-smi fallback)"
+
+  - name: hexporter-node
+    rules:
+      - alert: HexporterDown
+        expr: up{job="hexporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "hexporter on {{ $labels.instance }} not answering"
+
+      - alert: SharedFilesystemHung
+        expr: hpc_fs_responsive{mount_type=~"nfs|parallel|smb|fuse"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.mountpoint }} ({{ $labels.mount_type }}) hung on {{ $labels.instance }}"
+
+      - alert: ExpectedMountMissing
+        expr: hpc_fs_mounted == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} not mounted on {{ $labels.instance }}"
+
+      - alert: PBSMomDown
+        expr: hpc_pbs_mom_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pbs_mom not running on {{ $labels.instance }}"

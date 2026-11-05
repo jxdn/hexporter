@@ -230,7 +230,7 @@ Test scripts (read-only, run on a node before deploying) are in `tools/`: `test-
 | # | Function | Why | Effort |
 |---|---|---|---|
 | 1 | **PBS job details via `qstat -f -F json`** (cached 60 s): `project`, `walltime`, `ngpus`, `start_time` | Group usage by project (e.g. `CFP05-SF-000`) and check walltime | S |
-| 2 | **Grafana dashboards + alert rules + recording rules** in the repo (`deploy/`) | GPU per job/user, idle 60 min, XID/ECC, hung mounts, NFS latency | M |
+| 2 | ~~Grafana dashboard + alert rules~~ **done**: `deploy/grafana/`, `deploy/prometheus/`. Left: recording rules to make the 24 h idle subqueries cheaper on large clusters | GPU per job/user, idle detection, XID/ECC, hung mounts, NFS latency | S |
 | 3 | **Per-job GPU summary at job end** (avg util, peak mem, GPU-hours, energy, main pipe) → CSV/DB | History beyond Prometheus retention; usage reports | M |
 | 4 | **go-dcgm / NVML bindings** instead of exec | One call, no 2 s dmon wait, per-process SM utilization | M (cgo) |
 | 5 | **MIG support**: `gpu_instance_id` / `mig_uuid` labels | If any node partitions B200s | S |

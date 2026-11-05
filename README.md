@@ -75,6 +75,20 @@ The exporter only reads. Docker needs more: NVIDIA Container Toolkit, root + `SY
 
 Full list: [docs/FUNCTIONS.md §4](docs/FUNCTIONS.md#4-configuration).
 
+## Grafana dashboard and alerts
+
+- **Dashboard** [deploy/grafana/hexporter-gpu.json](deploy/grafana/hexporter-gpu.json): Grafana → Dashboards → New → Import → upload the file → pick your Prometheus.
+  - **Idle detection:** allocated, idle and free GPUs; idle GPU-hours; a jobs table (GPUs held, idle GPUs, how long all of them have been idle); an idle-GPU list; and a GPU state timeline (Free, Idle (job), Busy, Busy outside PBS). Use *Idle after (min)* and *Idle if util ≤ (%)* at the top to tune it.
+  - **"Idle for"** is the shorter of *time since the GPU was last busy* and *time since the job got the GPU*, so a job still loading a model isn't flagged. It looks back 24 h.
+  - Other sections: who uses the GPUs, DCGM compute pipes per job, GPU health, shared filesystems, node.
+- **Alerts** [deploy/prometheus/hexporter-alerts.yml](deploy/prometheus/hexporter-alerts.yml):
+  - GPU held by a job at 0 % for 1 h, or every GPU of a job at 0 % for 2 h
+  - XID, uncorrected ECC, row-remap failure, thermal throttling, DCGM down
+  - exporter down, hung or missing mount, pbs_mom down
+
+  Add it under `rule_files:` in `prometheus.yml`.
+- Regenerate the dashboard after editing [gen_dashboard.py](deploy/grafana/gen_dashboard.py): `python3 deploy/grafana/gen_dashboard.py > deploy/grafana/hexporter-gpu.json`.
+
 ## Example queries
 
 ```promql
