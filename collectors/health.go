@@ -11,8 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// HealthCollector gathers EDAC memory error counts, OOM kills, and MCE events.
+// HealthCollector gathers EDAC memory error counts, OOM kills, MCE events
+// and system uptime.
 type HealthCollector struct {
+	uptime    *prometheus.Desc
 	edacCE    *prometheus.Desc
 	edacUE    *prometheus.Desc
 	oomKills  *prometheus.Desc
@@ -22,6 +24,8 @@ type HealthCollector struct {
 
 func NewHealthCollector() *HealthCollector {
 	return &HealthCollector{
+		uptime: prometheus.NewDesc("hpc_system_uptime_seconds",
+			"System uptime in seconds", nil, nil),
 		edacCE: prometheus.NewDesc("hpc_edac_correctable_errors_total",
 			"EDAC correctable memory errors per memory controller", []string{"mc"}, nil),
 		edacUE: prometheus.NewDesc("hpc_edac_uncorrectable_errors_total",
@@ -37,6 +41,7 @@ func NewHealthCollector() *HealthCollector {
 }
 
 func (c *HealthCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.uptime
 	ch <- c.edacCE
 	ch <- c.edacUE
 	ch <- c.oomKills
@@ -46,6 +51,13 @@ func (c *HealthCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *HealthCollector) Collect(ch chan<- prometheus.Metric) {
 	var collErr float64
+
+	if up, err := readUptime(); err != nil {
+		log.Printf("health: uptime: %v", err)
+		collErr = 1
+	} else {
+		ch <- prometheus.MustNewConstMetric(c.uptime, prometheus.GaugeValue, up)
+	}
 
 	// EDAC memory errors.
 	mcDirs, _ := filepath.Glob(sysPath("devices/system/edac/mc/mc*"))
@@ -139,4 +151,16 @@ func readMCECount() (int, error) {
 		}
 	}
 	return count, nil
+}
+
+func readUptime() (float64, error) {
+	data, err := os.ReadFile(procPath("uptime"))
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0, nil
+	}
+	return strconv.ParseFloat(fields[0], 64)
 }

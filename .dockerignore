@@ -1,0 +1,6 @@
+.git
+*.md
+!README.md
+docs/
+tools/
+dist/*.tar.gz

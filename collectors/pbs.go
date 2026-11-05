@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -20,7 +21,7 @@ func NewPBSCollector() *PBSCollector {
 		serviceUp: prometheus.NewDesc("hpc_pbs_service_up",
 			"1 if the pbs service is active", nil, nil),
 		momUp: prometheus.NewDesc("hpc_pbs_mom_up",
-			"1 if the pbs_mom daemon is active", nil, nil),
+			"1 if a pbs_mom process is running (or a pbs_mom unit is active)", nil, nil),
 		errorDesc: prometheus.NewDesc("hpc_collector_error",
 			"1 if the collector encountered an error during the last scrape",
 			nil, prometheus.Labels{"collector": "pbs"}),
@@ -54,13 +55,26 @@ func (c *PBSCollector) Collect(ch chan<- prometheus.Metric) {
 
 	ch <- prometheus.MustNewConstMetric(c.serviceUp, prometheus.GaugeValue, float64(pbsUp))
 
-	momVal := serviceActive("pbs_mom")
-	if momVal < 0 {
-		momVal = 0
+	// PBS Pro runs pbs_mom inside pbs.service (no pbs_mom unit); Torque has a
+	// pbs_mom unit. Either a running pbs_mom process or an active unit counts.
+	momVal := 0
+	if processRunning("pbs_mom") || serviceActive("pbs_mom") == 1 {
+		momVal = 1
 	}
 	ch <- prometheus.MustNewConstMetric(c.momUp, prometheus.GaugeValue, float64(momVal))
 
 	ch <- prometheus.MustNewConstMetric(c.errorDesc, prometheus.GaugeValue, collErr)
+}
+
+// processRunning reports whether a process with this comm name exists.
+func processRunning(comm string) bool {
+	dirs, _ := filepath.Glob(procPath("[0-9]*"))
+	for _, d := range dirs {
+		if readSysFile(filepath.Join(d, "comm")) == comm {
+			return true
+		}
+	}
+	return false
 }
 
 // serviceActive returns 1 if the unit is active, 0 if inactive/failed,

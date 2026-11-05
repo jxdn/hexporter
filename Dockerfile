@@ -1,42 +1,48 @@
+# Build for the GPU nodes (x86_64):
+#   docker build --platform linux/amd64 -t hpc-exporter:1.0.0 .
+# With BuildKit/buildx the builder stage runs natively and cross-compiles;
+# the classic builder falls back to the defaults below.
+ARG BUILDPLATFORM=linux/amd64
+
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM golang:1.22 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22 AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=1.0.0
 
 WORKDIR /build
-
-# Cache dependency downloads separately from source changes.
-COPY go.mod .
-ENV GOFLAGS="-mod=mod"
-ENV GONOSUMDB="*"
+COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o hpc-exporter .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o hpc-exporter .
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
+ARG TARGETARCH=amd64
+# DCGM client (dcgmi). Talks to the host's nv-hostengine on localhost:5555
+# (network_mode: host). Keep the major version equal to the host's DCGM.
+ARG INSTALL_DCGM=true
+ARG DCGM_PACKAGE=datacenter-gpu-manager-4-core
 
-# ipmitool  – IPMI power/SEL (needs SYS_RAWIO cap)
-# lm-sensors – hwmon sensor support
+# lm-sensors       – hwmon sensor support
 # infiniband-diags – ibstat, perfquery for IB metrics
-# Note: centrifydc/adinfo are NOT packageable; bind-mount from the host instead.
+# centrifydc/adinfo are not packageable; bind-mount them from the host.
+# nvidia-smi is not installed here: the NVIDIA Container Toolkit mounts it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ipmitool \
-        lm-sensors \
-        infiniband-diags \
-    && rm -rf /var/lib/apt/lists/*
-
-# Run as non-root.  Collectors that require elevated access:
-#   ipmitool    → cap_add: SYS_RAWIO  (set in docker-compose)
-#   /proc, /sys → mounted read-only from host
-#   nvidia-smi  → NOT installed here.  The NVIDIA Container Toolkit (runtime: nvidia
-#                 in docker-compose) bind-mounts the host driver + nvidia-smi binary
-#                 into the container automatically.  No image changes needed.
-RUN useradd -r -u 65534 -g nogroup -s /bin/false hpc-exporter
-USER hpc-exporter
+        ca-certificates curl lm-sensors infiniband-diags \
+ && if [ "$INSTALL_DCGM" = "true" ]; then \
+        case "$TARGETARCH" in arm64) repo=sbsa ;; *) repo=x86_64 ;; esac; \
+        curl -fsSL -o /tmp/cuda-keyring.deb \
+          "https://developer.download.nvidia.com/compute/cuda/repos/debian12/${repo}/cuda-keyring_1.1-1_all.deb" \
+     && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
+     && apt-get update && apt-get install -y --no-install-recommends "$DCGM_PACKAGE"; \
+    fi \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/hpc-exporter /usr/local/bin/hpc-exporter
 
+# Runs as root: reading other users' /proc/<pid>/environ (PBS job mapping)
+# needs root + CAP_SYS_PTRACE. All host mounts are read-only (docker-compose).
 EXPOSE 9009
-
 ENTRYPOINT ["/usr/local/bin/hpc-exporter"]

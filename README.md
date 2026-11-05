@@ -1,127 +1,101 @@
-# hpc-exporter
+# hexporter (hpc-exporter) v1.0.0
 
-Prometheus exporter for HPC node metrics. Exposes CPU, memory, disk, network, GPU, IPMI, temperature, Centrify AD, and PBS scheduler health on `:9100/metrics`.
+Prometheus exporter for HPC GPU nodes running PBS. On `:9009/metrics` it exposes:
+
+- **GPU → PBS job → user → framework**: which job and user hold each GPU, and what runs on it (vLLM, SGLang, Triton, Ollama, training…). This includes GPUs a job holds while idle, and work started outside PBS.
+- **GPU metrics from DCGM** (falls back to nvidia-smi): utilization, memory, power, energy, clocks, XID, ECC, HBM row remapping, PCIe/NVLink errors, power/thermal throttling.
+- **DCGM pipe activity**: FP64 / FP32 / FP16 / INT / Tensor Cores (HMMA, IMMA, DFMA), SM active/occupancy, DRAM, PCIe/NVLink bandwidth.
+- **Shared filesystems**: NFS, dpc (`/scratch`), Lustre, GPFS… Responsive/hung check with a timeout, read-only, expected mounts, and NFS RPC counters per operation.
+- **Node**: CPU, memory, disk I/O, network/InfiniBand, temperatures, EDAC/MCE/OOM, uptime, PBS mom, Centrify.
+
+Node power/SEL is **not** included; use the iDRAC exporter.
+
+All functions, metrics, settings and the roadmap: **[docs/FUNCTIONS.md](docs/FUNCTIONS.md)**. Design notes: [docs/PLAN.md](docs/PLAN.md).
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Generate go.sum (only needed once)
-go mod tidy
-
-# 2. Build and run with Docker Compose
-docker compose up -d --build
-
-# 3. Verify
-curl -s http://localhost:9100/metrics | head -30
+make test            # unit tests
+make image-cross     # Apple Silicon / no buildx: compile locally + package amd64 image
+# or, on an x86_64 build host:  make image
+make package         # dist/hpc-exporter-1.0.0-linux-amd64.tar.gz: binary + setup-hpc-exporter.sh (systemd, no Docker)
+make save            # dist/hpc-exporter-1.0.0-amd64.tar.gz: Docker image for nodes without a registry
 ```
 
----
+On a GPU node, **systemd (no Docker)**: put `hpc-exporter` and [setup-hpc-exporter.sh](deploy/systemd/setup-hpc-exporter.sh) in one folder, then as root:
 
-## Prometheus scrape config
+```bash
+bash setup-hpc-exporter.sh install     # /usr/local/bin + /etc/hpc-exporter/hpc-exporter.env + hpc-exporter.service
+bash verify-metrics.sh                 # tools/verify-metrics.sh
+```
+
+Or **Docker**:
+
+```bash
+gunzip -c hpc-exporter-1.0.0-amd64.tar.gz | docker load
+docker compose up -d
+```
+
+Step by step: [docs/NODE-TEST.md](docs/NODE-TEST.md).
+
+## Prometheus
 
 ```yaml
 scrape_configs:
   - job_name: hpc_node
+    scrape_interval: 60s
+    scrape_timeout: 30s
     static_configs:
-      - targets: ['<node-ip>:9100']
-    scrape_interval: 30s
-    scrape_timeout: 15s
+      - targets: ['<node>:9009']
 ```
 
----
+## Node requirements
 
-## Environment variables
+| Need | For |
+|---|---|
+| `nvidia-smi` (NVIDIA driver) | GPU list and processes |
+| DCGM 4.x (`dcgmi`), `nv-hostengine` running (`nvidia-dcgm`, or `cuda-dcgm` on Bright) | DCGM values, health and pipe metrics (without it: nvidia-smi fallback, `hpc_gpu_dcgm_up 0`) |
+| root (the systemd service runs as root) | Reading every PBS job's environment (job, queue, name, `CUDA_VISIBLE_DEVICES`) and the node's mount statistics |
 
-| Variable          | Default  | Description                                                   |
-|-------------------|----------|---------------------------------------------------------------|
-| `PORT`            | `9100`   | TCP port to listen on                                         |
-| `HOST_PROC`       | `/proc`  | Path to host's `/proc` (set to `/host/proc` in Docker)        |
-| `HOST_SYS`        | `/sys`   | Path to host's `/sys` (set to `/host/sys` in Docker)          |
-| `IPMI_ENABLED`    | `true`   | Enable IPMI collector (`false` to disable)                    |
-| `NVIDIA_ENABLED`  | `true`   | Enable GPU/nvidia-smi collector (`false` to disable)          |
-| `CENTRIFY_ENABLED`| `true`   | Enable Centrify AD collector (`false` to disable)             |
-| `PBS_ENABLED`     | `true`   | Enable PBS scheduler collector (`false` to disable)           |
+The exporter only reads. Docker needs more: NVIDIA Container Toolkit, root + `SYS_PTRACE`, `pid: host`, and `/` at `/host/root`; see [docker-compose.yml](docker-compose.yml).
 
----
+## Main settings
 
-## Collectors and privilege requirements
+| Variable | Default | |
+|---|---|---|
+| `DCGM_ENABLED` | `true` | DCGM as GPU source |
+| `GPU_JOB_MAPPING` | `true` | GPU → job → user → framework |
+| `GPU_PROCESS_METRICS` | `true` | Per-process GPU memory |
+| `NFS_ENABLED` | `true` | NFS RPC counters |
+| `PORT` | `9009` | Listen port |
+| `EXPECTED_MOUNTS` | – | e.g. `/scratch,/nfs/home/svu,/app1,/hpctmp` (`hpc_fs_mounted 0` if missing) |
+| `FS_STAT_TIMEOUT` | `5s` | Hung-mount timeout |
 
-| Collector   | Source                          | Privilege required                        |
-|-------------|--------------------------------|-------------------------------------------|
-| CPU         | `/proc/stat`, `/proc/cpuinfo`  | None                                      |
-| Memory      | `/proc/meminfo`                | None                                      |
-| Disk        | `/proc/mounts`, `syscall.Statfs`, `/proc/diskstats` | None            |
-| Network     | `/proc/net/dev`                | None; `ibstat`/`perfquery` need IB access |
-| GPU         | `nvidia-smi`                   | NVIDIA driver access (`/dev/nvidia*`)     |
-| IPMI        | `ipmitool dcmi power reading`  | `SYS_RAWIO` capability                   |
-| Temperature | `/sys/class/hwmon/`, `/sys/class/thermal/` | None                        |
-| Centrify    | `systemctl`, `adinfo`          | None (adinfo may need domain membership)  |
-| PBS         | `systemctl`                    | None                                      |
-| Health      | `/sys/devices/system/edac/`, `/proc/vmstat` | None; `ras-mc-ctl` for MCE  |
+Full list: [docs/FUNCTIONS.md §4](docs/FUNCTIONS.md#4-configuration).
 
-All collectors are **fault-tolerant**: if a source is unavailable the collector logs
-the error, emits `hpc_collector_error{collector="<name>"} 1`, and returns without
-crashing the exporter.
+## Example queries
 
----
+```promql
+# Utilization per job / user / framework
+hpc_gpu_utilization_percent * on(gpu_uuid) group_left(jobid, user, framework) hpc_gpu_job_info
+# GPU held by a job but idle for 60 min
+max_over_time(hpc_gpu_utilization_percent[60m]) * on(gpu_uuid) group_left(jobid, user) hpc_gpu_job_info == 0
+# What each GPU computes with
+topk by (gpu_uuid) (1, hpc_gpu_pipe_active_ratio{pipe!="tensor"})
+# Hung shared filesystem
+hpc_fs_responsive{mount_type=~"nfs|parallel"} == 0
+# New XID error
+changes(hpc_gpu_last_xid[5m]) > 0
+```
 
-## Centrify / adinfo
+## Check a node before deploying
 
-`centrifydc` is not available as a standard Debian package.  The container cannot
-install it at build time.  To expose the Centrify metrics:
-
-1. Install Centrify DirectControl on the **host**.
-2. The `docker-compose.yml` bind-mounts `/usr/sbin/adinfo` and `/usr/sbin/centrifydc`
-   into the container read-only.
-3. If the binaries live elsewhere on the host, adjust the volume paths accordingly.
-4. Set `CENTRIFY_ENABLED=false` if Centrify is not used.
-
----
-
-## GPU / NVIDIA
-
-The exporter calls `nvidia-smi` inside the container. Options:
-
-- **NVIDIA Container Toolkit** (recommended): uncomment the `deploy.resources` block in
-  `docker-compose.yml`.
-- **Manual device mount**: add `/dev/nvidia*` and `/dev/nvidiactl` as devices.
-- If `nvidia-smi` is not found the GPU collector silently skips all metrics.
-
----
-
-## Running without Docker
+Read-only scripts in [tools/](tools/):
 
 ```bash
-go build -o hpc-exporter .
-sudo ./hpc-exporter          # sudo needed for ipmitool
-# or without IPMI:
-IPMI_ENABLED=false ./hpc-exporter
-```
-
----
-
-## Key metrics reference
-
-```
-hpc_cpu_usage_percent           – overall CPU busy %
-hpc_cpu_iowait_percent          – iowait %
-hpc_load_average{period}        – 1m / 5m / 15m load averages
-hpc_memory_used_bytes           – RSS + kernel allocations
-hpc_disk_read_bytes_total       – cumulative bytes read per device
-hpc_disk_io_latency_ms          – delta-based average I/O latency
-hpc_network_rx_bytes_total      – bytes received per interface
-hpc_ib_port_state               – 1=active, 0=down
-hpc_gpu_utilization_percent     – GPU compute utilization
-hpc_gpu_memory_used_bytes       – GPU VRAM used
-hpc_gpu_ecc_errors_uncorrected_total – uncorrected ECC errors (critical)
-hpc_ipmi_power_watts            – instantaneous node power draw
-hpc_temperature_celsius         – CPU package / core temperatures
-hpc_edac_correctable_errors_total   – correctable DRAM errors per MC
-hpc_edac_uncorrectable_errors_total – uncorrectable DRAM errors per MC
-hpc_oom_kills_total             – OOM kill events since boot
-hpc_centrify_service_up         – Centrify agent health
-hpc_pbs_mom_up                  – PBS MOM daemon health
-hpc_collector_error{collector}  – 1 if a collector encountered an error
+sudo bash tools/test-gpu-job-map.sh   # GPU → job → user → framework
+bash tools/test-shared-fs.sh          # mounts, hung check, NFS stats
+bash tools/test-dcgm.sh               # DCGM fields, values, health
 ```

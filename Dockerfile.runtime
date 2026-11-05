@@ -1,0 +1,34 @@
+# Runtime-only image from a binary built outside Docker (e.g. on Apple Silicon,
+# where the Go toolchain crashes under amd64 emulation). Use: make image-cross
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/hpc-exporter-linux-amd64 .
+#   docker build --platform linux/amd64 -f Dockerfile.runtime -t hpc-exporter:1.0.0 .
+# ── Runtime ───────────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+ARG TARGETARCH=amd64
+# DCGM client (dcgmi). Talks to the host's nv-hostengine on localhost:5555
+# (network_mode: host). Keep the major version equal to the host's DCGM.
+ARG INSTALL_DCGM=true
+ARG DCGM_PACKAGE=datacenter-gpu-manager-4-core
+
+# lm-sensors       – hwmon sensor support
+# infiniband-diags – ibstat, perfquery for IB metrics
+# centrifydc/adinfo are not packageable; bind-mount them from the host.
+# nvidia-smi is not installed here: the NVIDIA Container Toolkit mounts it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl lm-sensors infiniband-diags \
+ && if [ "$INSTALL_DCGM" = "true" ]; then \
+        case "$TARGETARCH" in arm64) repo=sbsa ;; *) repo=x86_64 ;; esac; \
+        curl -fsSL -o /tmp/cuda-keyring.deb \
+          "https://developer.download.nvidia.com/compute/cuda/repos/debian12/${repo}/cuda-keyring_1.1-1_all.deb" \
+     && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
+     && apt-get update && apt-get install -y --no-install-recommends "$DCGM_PACKAGE"; \
+    fi \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG BINARY=dist/hpc-exporter-linux-amd64
+COPY ${BINARY} /usr/local/bin/hpc-exporter
+
+# Runs as root: reading other users' /proc/<pid>/environ (PBS job mapping)
+# needs root + CAP_SYS_PTRACE. All host mounts are read-only (docker-compose).
+EXPOSE 9009
+ENTRYPOINT ["/usr/local/bin/hpc-exporter"]

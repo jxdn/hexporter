@@ -12,16 +12,16 @@ import (
 
 // TemperatureCollector reads hwmon and thermal_zone sensors from /sys.
 type TemperatureCollector struct {
-	hwmonTemp      *prometheus.Desc
-	thermalZone    *prometheus.Desc
-	errorDesc      *prometheus.Desc
+	hwmonTemp   *prometheus.Desc
+	thermalZone *prometheus.Desc
+	errorDesc   *prometheus.Desc
 }
 
 func NewTemperatureCollector() *TemperatureCollector {
 	return &TemperatureCollector{
 		hwmonTemp: prometheus.NewDesc("hpc_temperature_celsius",
-			"Hardware sensor temperature in Celsius",
-			[]string{"sensor", "chip", "type"}, nil),
+			"Hardware sensor temperature in Celsius (device: PCI address or platform device of the chip)",
+			[]string{"sensor", "chip", "device", "type"}, nil),
 		thermalZone: prometheus.NewDesc("hpc_thermal_zone_celsius",
 			"Thermal zone temperature in Celsius",
 			[]string{"zone", "type"}, nil),
@@ -63,6 +63,8 @@ func (c *TemperatureCollector) collectHwmon(ch chan<- prometheus.Metric) error {
 		if chipName == "" {
 			chipName = filepath.Base(hwmonDir)
 		}
+		device := hwmonDevice(hwmonDir)
+		seen := map[string]bool{}
 
 		inputs, _ := filepath.Glob(filepath.Join(hwmonDir, "temp*_input"))
 		for _, inputPath := range inputs {
@@ -84,6 +86,10 @@ func (c *TemperatureCollector) collectHwmon(ch chan<- prometheus.Metric) error {
 				sensorLabel = base
 			}
 			sensorLabel = sanitizeLabel(sensorLabel)
+			if seen[sensorLabel] { // two inputs with the same label on one chip
+				sensorLabel += "_" + base
+			}
+			seen[sensorLabel] = true
 
 			// Determine type: package vs core.
 			sensorType := "core"
@@ -97,7 +103,7 @@ func (c *TemperatureCollector) collectHwmon(ch chan<- prometheus.Metric) error {
 			}
 
 			ch <- prometheus.MustNewConstMetric(c.hwmonTemp, prometheus.GaugeValue, celsius,
-				sensorLabel, chipName, sensorType)
+				sensorLabel, chipName, device, sensorType)
 		}
 	}
 	return nil
@@ -131,6 +137,18 @@ func (c *TemperatureCollector) collectThermalZones(ch chan<- prometheus.Metric) 
 			zoneName, zoneType)
 	}
 	return nil
+}
+
+// hwmonDevice names the hardware behind a hwmon directory, so chips with the
+// same name stay apart: several mlx5 NICs (0000:18:00.0, 0000:1a:00.0, ...)
+// or one coretemp per socket (coretemp.0, coretemp.1). Falls back to hwmonN.
+func hwmonDevice(hwmonDir string) string {
+	if target, err := filepath.EvalSymlinks(filepath.Join(hwmonDir, "device")); err == nil {
+		if b := filepath.Base(target); b != "" && b != "." && b != "/" {
+			return b
+		}
+	}
+	return filepath.Base(hwmonDir)
 }
 
 // readSysFile reads a sysfs file and returns its trimmed content, or "" on error.
