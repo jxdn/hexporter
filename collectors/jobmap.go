@@ -3,11 +3,14 @@ package collectors
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // PBS job discovery from the host's /proc.
@@ -58,12 +61,18 @@ func scanJobs() *jobScan {
 		if err != nil {
 			continue
 		}
-		s.Scanned++
 		env, err := readEnviron(pid)
 		if err != nil {
+			// A process that exited after ReadDir is not "unreadable": on a
+			// busy node a few short-lived processes vanish during every scan.
+			if processGone(pid, err) {
+				continue
+			}
+			s.Scanned++
 			s.Unreadable++
 			continue
 		}
+		s.Scanned++
 		id := env["PBS_JOBID"]
 		if id == "" {
 			continue
@@ -153,6 +162,17 @@ func readEnviron(pid int) (map[string]string, error) {
 		}
 	}
 	return m, nil
+}
+
+// processGone reports whether a failed /proc/<pid> read means the process
+// has exited (ESRCH, or its /proc directory no longer exists) rather than
+// that its environ is not readable.
+func processGone(pid int, err error) bool {
+	if errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	_, serr := os.Stat(procPath(strconv.Itoa(pid)))
+	return errors.Is(serr, fs.ErrNotExist)
 }
 
 // cgroupToken returns the PBS job token from /proc/<pid>/cgroup

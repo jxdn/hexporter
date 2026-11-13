@@ -115,6 +115,21 @@ func TestScanJobsAndMatching(t *testing.T) {
 	}
 }
 
+// A process that exits between listing /proc and reading its environ must
+// not be counted as unreadable.
+func TestScanJobsSkipsExitedProcess(t *testing.T) {
+	root := borealisProc(t)
+	// Listed by ReadDir, but /proc/<pid> no longer resolves: the process exited.
+	must(t, os.Symlink(filepath.Join(root, "gone"), filepath.Join(root, "8001")))
+	s := scanJobs()
+	if s.Unreadable != 1 {
+		t.Errorf("unreadable = %d, want 1 (only pid 7001; exited pid 8001 skipped)", s.Unreadable)
+	}
+	if s.Scanned != 14 {
+		t.Errorf("scanned = %d, want 14", s.Scanned)
+	}
+}
+
 func TestCgroupNumberFallback(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOST_PROC", root)

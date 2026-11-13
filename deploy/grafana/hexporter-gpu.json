@@ -290,7 +290,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "count(((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2)) >= $idle_minutes * 60)) or vector(0)",
+          "expr": "count(((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"}) >= $idle_minutes * 60)) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true
@@ -354,7 +354,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "(count(((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2)) >= $idle_minutes * 60)) or vector(0)) / count(count by (instance, gpu_uuid) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})))",
+          "expr": "(count(((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"}) >= $idle_minutes * 60)) or vector(0)) / count(count by (instance, gpu_uuid) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})))",
           "legendFormat": "__auto",
           "range": false,
           "instant": true
@@ -483,7 +483,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(sum_over_time((count by (instance, gpu_uuid) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})) > bool 0)[$__range:1m])) / 60",
+          "expr": "sum(sum_over_time(hpc:gpu_allocated:bool{instance=~\"$instance\", user=~\"$user\"}[$__range])) / 60",
           "legendFormat": "__auto",
           "range": false,
           "instant": true
@@ -544,7 +544,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(sum_over_time(((hpc_gpu_utilization_percent{instance=~\"$instance\"} <= bool $idle_threshold) * on (instance, gpu_uuid) group_left () (count by (instance, gpu_uuid) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})) > bool 0))[$__range:1m])) / 60",
+          "expr": "sum(sum_over_time(hpc:gpu_allocated_idle:bool{instance=~\"$instance\", user=~\"$user\", threshold=\"$idle_threshold\"}[$__range])) / 60",
           "legendFormat": "__auto",
           "range": false,
           "instant": true
@@ -595,7 +595,7 @@
       "id": 8,
       "type": "table",
       "title": "Jobs: GPUs held and idle",
-      "description": "All GPUs idle for = how long every GPU of the job has been idle. Avg util over the last $idle_minutes min.",
+      "description": "One row per job per node: a job on several nodes has a row for each. All GPUs idle for = how long every GPU of the job on that node has been idle. Avg util over the last $idle_minutes min.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -613,7 +613,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "count by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}))",
+          "expr": "count by (instance, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}))",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -625,7 +625,7 @@
             "uid": "${datasource}"
           },
           "refId": "B",
-          "expr": "count by (jobid, user, queue, job_name) (((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2)) >= $idle_minutes * 60)) or count by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})) * 0",
+          "expr": "count by (instance, jobid, user, queue, job_name) (((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"}) >= $idle_minutes * 60)) or count by (instance, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"})) * 0",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -637,7 +637,7 @@
             "uid": "${datasource}"
           },
           "refId": "C",
-          "expr": "min by (jobid, user, queue, job_name) ((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2)))",
+          "expr": "min by (instance, jobid, user, queue, job_name) ((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"}))",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -649,7 +649,7 @@
             "uid": "${datasource}"
           },
           "refId": "D",
-          "expr": "avg by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () avg_over_time(hpc_gpu_utilization_percent{instance=~\"$instance\"}[${idle_minutes}m]))",
+          "expr": "avg by (instance, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () avg_over_time(hpc_gpu_utilization_percent{instance=~\"$instance\"}[${idle_minutes}m]))",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -661,7 +661,7 @@
             "uid": "${datasource}"
           },
           "refId": "E",
-          "expr": "sum by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () hpc_gpu_memory_used_bytes{instance=~\"$instance\"})",
+          "expr": "sum by (instance, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () hpc_gpu_memory_used_bytes{instance=~\"$instance\"})",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -673,7 +673,7 @@
             "uid": "${datasource}"
           },
           "refId": "F",
-          "expr": "sum by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () hpc_gpu_power_draw_watts{instance=~\"$instance\"})",
+          "expr": "sum by (instance, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid) group_left () hpc_gpu_power_draw_watts{instance=~\"$instance\"})",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -696,6 +696,7 @@
               "__name__": true
             },
             "renameByName": {
+              "instance": "Node",
               "jobid": "Job",
               "user": "User",
               "queue": "Queue",
@@ -709,15 +710,16 @@
             },
             "indexByName": {
               "jobid": 0,
-              "user": 1,
-              "Value #A": 2,
-              "Value #B": 3,
-              "Value #C": 4,
-              "Value #D": 5,
-              "Value #E": 6,
-              "Value #F": 7,
-              "queue": 8,
-              "job_name": 9
+              "instance": 1,
+              "user": 2,
+              "Value #A": 3,
+              "Value #B": 4,
+              "Value #C": 5,
+              "Value #D": 6,
+              "Value #E": 7,
+              "Value #F": 8,
+              "queue": 9,
+              "job_name": 10
             }
           }
         }
@@ -875,7 +877,7 @@
       "id": 9,
       "type": "table",
       "title": "Idle GPUs: held by a job, ≤ $idle_threshold % for ≥ $idle_minutes min",
-      "description": "Idle for = shorter of (time since last busy) and (time since the job got the GPU); max ~24 h.",
+      "description": "Idle for = shorter of (time since last busy) and (time since the job got the GPU).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -893,7 +895,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2)) >= $idle_minutes * 60)",
+          "expr": "((max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"}) >= $idle_minutes * 60)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -1027,7 +1029,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "(hpc_gpu_utilization_percent{instance=~\"$instance\"} > bool $idle_threshold) * 2 + on (instance, gpu_uuid) group_left () (clamp_max(count by (instance, gpu_uuid) (hpc_gpu_job_info{instance=~\"$instance\", jobid!=\"none\"}), 1) or count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0)",
+          "expr": "hpc:gpu_state{instance=~\"$instance\", threshold=\"$idle_threshold\"}",
           "legendFormat": "{{instance}} GPU{{gpu_index}}",
           "range": true,
           "instant": false
@@ -1183,7 +1185,7 @@
             "uid": "${datasource}"
           },
           "refId": "F",
-          "expr": "(max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () ((((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) + on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9))) - abs((time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) (hpc_gpu_job_info{instance=~\"$instance\"}))[24h:1m])) - on (instance, gpu_uuid) group_left () (min by (instance, gpu_uuid) (time() - max_over_time(timestamp(hpc_gpu_utilization_percent{instance=~\"$instance\"} > $idle_threshold)[24h:1m])) or (count by (instance, gpu_uuid) (hpc_gpu_utilization_percent{instance=~\"$instance\"}) * 0 + 1e9)))) / 2))",
+          "expr": "(max without (source) (hpc_gpu_job_info{instance=~\"$instance\", user=~\"$user\"}) * on (instance, gpu_uuid, jobid) group_left () hpc:gpu_job_idle:seconds{instance=~\"$instance\", threshold=\"$idle_threshold\"})",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,

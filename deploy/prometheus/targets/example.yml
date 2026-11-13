@@ -1,0 +1,23 @@
+# Example hexporter targets file (file_sd). Real files (hexporter-<cluster>.yml)
+# hold node IPs and are NOT committed: .gitignore excludes them.
+#
+# Put hexporter-<cluster>.yml in the folder the scrape job's file_sd glob reads
+# on the Prometheus host. Prometheus re-reads it every minute; no reload needed.
+# Make it world-readable (chmod 644): Prometheus runs as nobody in its container,
+# and a root-only file fails with "Error reading file ... permission denied".
+#
+# One entry per GPU node: address:port, the node name as instance (shown in
+# Grafana), and cluster (keeps clusters apart when they share one Prometheus).
+# Comment out nodes that are down or not installed yet.
+#
+# Generate on a host that resolves the node names, e.g. for borealis-01..55:
+#   for i in $(seq -w 1 55); do n=borealis-$i
+#     printf -- "- targets: ['%s:9009']\n  labels: {instance: %s, cluster: borealis}\n" "$(getent ahostsv4 $n | awk '{print $1; exit}')" "$n"
+#   done > hexporter-borealis.yml
+#   chmod 644 hexporter-borealis.yml
+- targets: ['<node-01-ip>:9009']
+  labels: {instance: node-01, cluster: mycluster}
+- targets: ['<node-02-ip>:9009']
+  labels: {instance: node-02, cluster: mycluster}
+# - targets: ['<node-03-ip>:9009']
+#   labels: {instance: node-03, cluster: mycluster}

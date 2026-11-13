@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Generate hexporter-gpu.json, the Grafana dashboard for hexporter v1.
+"""Generate the Grafana dashboard and the Prometheus recording rules it needs.
 
-    python3 deploy/grafana/gen_dashboard.py > deploy/grafana/hexporter-gpu.json
+    python3 deploy/grafana/gen_dashboard.py       > deploy/grafana/hexporter-gpu.json
+    python3 deploy/grafana/gen_dashboard.py rules > deploy/prometheus/hexporter-recording.yml
+
+The dashboard reads the hpc:* series that the recording rules save every minute,
+so Prometheus must load hexporter-recording.yml (rule_files:).
 
 Idle detection: a GPU is "idle" when a job holds it and its utilization has
 stayed at or below $idle_threshold %. "Idle for" is the shorter of
   - the time since the GPU was last busy (utilization > $idle_threshold), and
   - the time since the job got the GPU,
 so a job that just started and is still loading is not reported as idle.
-Lookback is 24 h: "idle for" tops out at about 24 h.
+The rules carry "last busy" and "job got the GPU" forward minute by minute, so
+"idle for" has no 24 h cap; it starts counting when the rules are first loaded.
 """
 import json
+import sys
+
+# Idle thresholds (util <= T %). The dashboard variable and the rules must match.
+THRESHOLDS = ["0", "1", "5", "10"]
 
 DS = {"type": "prometheus", "uid": "${datasource}"}
 INST = 'instance=~"$instance"'
@@ -19,22 +28,13 @@ JOBALL = f'hpc_gpu_job_info{{{INST}}}'
 JOBPBS = f'hpc_gpu_job_info{{{INST}, jobid!="none"}}'
 # one row per (GPU, job), filtered by user; drops "source" so it can't split series
 JOB = f'max without (source) (hpc_gpu_job_info{{{INST}, user=~"$user"}})'
-JL = "jobid, user, queue, job_name"
+# jobs table: one row per job per node (a multi-node job gets a row for each node)
+JL = "instance, jobid, user, queue, job_name"
 
-# seconds since the GPU was last busy; 1e9 if not busy in the last 24 h
-SINCE_BUSY = (
-    f'(min by (instance, gpu_uuid) (time() - max_over_time(timestamp({UTIL} > $idle_threshold)[24h:1m]))'
-    f' or (count by (instance, gpu_uuid) ({UTIL}) * 0 + 1e9))'
-)
-# seconds since the job got the GPU (within 24 h)
-HELD = f'(time() - min_over_time(timestamp(count by (instance, gpu_uuid, jobid) ({JOBALL}))[24h:1m]))'
-# min(HELD, SINCE_BUSY) = (a + b - |a - b|) / 2, labels (instance, gpu_uuid, jobid)
-IDLE_RAW = (
-    f'(({HELD} + on (instance, gpu_uuid) group_left () {SINCE_BUSY})'
-    f' - abs({HELD} - on (instance, gpu_uuid) group_left () {SINCE_BUSY})) / 2'
-)
+TH = 'threshold="$idle_threshold"'
 # with job labels (gpu_index, user, queue, job_name, framework)
-IDLE = f'({JOB} * on (instance, gpu_uuid, jobid) group_left () ({IDLE_RAW}))'
+IDLE = (f'({JOB} * on (instance, gpu_uuid, jobid) group_left () '
+        f'hpc:gpu_job_idle:seconds{{{INST}, {TH}}})')
 IDLE_OVER = f'({IDLE} >= $idle_minutes * 60)'
 
 
@@ -170,12 +170,11 @@ P += [
          f'count(count by (instance, gpu_uuid) ({UTIL}) unless on (instance, gpu_uuid) {JOBALL}) or vector(0)',
          12, y, th=thresholds("text"), desc="GPUs no job or process is using"),
     stat("GPU-h held",
-         f'sum(sum_over_time((count by (instance, gpu_uuid) ({JOB}) > bool 0)[$__range:1m])) / 60',
+         f'sum(sum_over_time(hpc:gpu_allocated:bool{{{INST}, user=~"$user"}}[$__range])) / 60',
          16, y, unit="none", decimals=1, th=thresholds("blue"),
          desc="GPU-hours held by jobs in the selected time range (1-minute resolution)"),
     stat("GPU-h idle",
-         f'sum(sum_over_time((({UTIL} <= bool $idle_threshold) * on (instance, gpu_uuid) group_left () '
-         f'(count by (instance, gpu_uuid) ({JOB}) > bool 0))[$__range:1m])) / 60',
+         f'sum(sum_over_time(hpc:gpu_allocated_idle:bool{{{INST}, user=~"$user", {TH}}}[$__range])) / 60',
          20, y, unit="none", decimals=1, th=thresholds("green", 1, "orange", 24, "red"),
          desc="GPU-hours held by jobs while utilization was ≤ $idle_threshold % (minute by minute)"),
 ]
@@ -192,7 +191,7 @@ P.append(table(
      tgt(f'sum by ({JL}) ({on_jobs(f"hpc_gpu_power_draw_watts{{{INST}}}")})', ref="F",
          instant=True, table=True)],
     0, y, w=24, h=7,
-    rename={"jobid": "Job", "user": "User", "queue": "Queue", "job_name": "Job name",
+    rename={"instance": "Node", "jobid": "Job", "user": "User", "queue": "Queue", "job_name": "Job name",
             "Value #A": "GPUs", "Value #B": "Idle GPUs", "Value #C": "All GPUs idle for",
             "Value #D": "Avg util (window)", "Value #E": "GPU memory", "Value #F": "Power"},
     overrides=[ov("Idle GPUs", th=thresholds("green", 1, "red"), color_bg="color-background"),
@@ -201,9 +200,11 @@ P.append(table(
                ov("GPU memory", unit="bytes", decimals=0),
                ov("Power", unit="watt", decimals=0)],
     sort=("All GPUs idle for", True),
-    order=("Job", "User", "GPUs", "Idle GPUs", "All GPUs idle for", "Avg util (window)", "GPU memory", "Power",
+    order=("Job", "Node", "User", "GPUs", "Idle GPUs", "All GPUs idle for", "Avg util (window)", "GPU memory", "Power",
            "Queue", "Job name"),
-    desc="All GPUs idle for = how long every GPU of the job has been idle. Avg util over the last $idle_minutes min."))
+    desc="One row per job per node: a job on several nodes has a row for each. "
+         "All GPUs idle for = how long every GPU of the job on that node has been idle. "
+         "Avg util over the last $idle_minutes min."))
 y += 7
 P.append(table(
     "Idle GPUs: held by a job, ≤ $idle_threshold % for ≥ $idle_minutes min",
@@ -213,9 +214,8 @@ P.append(table(
     overrides=[ov("Idle for", unit="dtdurations", th=IDLE_TH, color_bg="color-background")],
     sort=("Idle for", True),
     order=("Node", "GPU", "Idle for", "Job", "User", "Framework", "Queue", "Job name"),
-    desc="Idle for = shorter of (time since last busy) and (time since the job got the GPU); max ~24 h."))
-STATE = (f'({UTIL} > bool $idle_threshold) * 2 + on (instance, gpu_uuid) group_left () '
-         f'(clamp_max(count by (instance, gpu_uuid) ({JOBPBS}), 1) or count by (instance, gpu_uuid) ({UTIL}) * 0)')
+    desc="Idle for = shorter of (time since last busy) and (time since the job got the GPU)."))
+STATE = f'hpc:gpu_state{{{INST}, {TH}}}'
 st = {"id": nid(), "type": "state-timeline", "title": "GPU state over time", "datasource": DS,
       "description": "Free = no PBS job · Idle = PBS job holds it at ≤ $idle_threshold % · "
                      "Busy outside PBS = work without a PBS job · Busy = PBS job computing",
@@ -459,7 +459,7 @@ dash = {
         var_query("instance", "Node", "label_values(hpc_gpu_utilization_percent, instance)"),
         var_query("user", "User", 'label_values(hpc_gpu_job_info{instance=~"$instance"}, user)'),
         var_custom("idle_minutes", "Idle after (min)", ["30", "60", "120", "240", "480"], "60"),
-        var_custom("idle_threshold", "Idle if util ≤ (%)", ["0", "1", "5", "10"], "0"),
+        var_custom("idle_threshold", "Idle if util ≤ (%)", THRESHOLDS, "0"),
     ]},
     "annotations": {"list": [{"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"},
                               "enable": True, "hide": True, "iconColor": "rgba(0, 211, 255, 1)",
@@ -467,4 +467,93 @@ dash = {
     "panels": P,
 }
 
-print(json.dumps(dash, indent=2, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------- recording rules
+U = "hpc_gpu_utilization_percent"
+J = "hpc_gpu_job_info"
+
+
+def rule(record, expr, comment, threshold=None):
+    lines = [f"      # {c}" for c in comment.split("\n")]
+    lines += [f"      - record: {record}", "        expr: |"]
+    lines += [f"          {l}" for l in expr.strip("\n").split("\n")]
+    if threshold is not None:
+        lines += ["        labels:", f'          threshold: "{threshold}"']
+    return "\n".join(lines)
+
+
+def rules():
+    out = [f"""# Recording rules for the hexporter Grafana dashboard. GENERATED by
+# deploy/grafana/gen_dashboard.py rules: edit there, not here.
+#
+# Add to prometheus.yml, next to hexporter-alerts.yml:
+#   rule_files:
+#     - /etc/prometheus/rules/hexporter-recording.yml
+# Check: promtool check rules hexporter-recording.yml
+#        promtool test rules tests/hexporter-recording.test.yml
+#
+# Each minute these save small per-GPU series (hpc:*), so the dashboard reads
+# one value per GPU instead of re-scanning 24 h of raw data on every refresh.
+# Thresholds ({", ".join(THRESHOLDS)} %) match the dashboard's "Idle if util <=" variable.
+#
+# hpc:gpu_last_busy:timestamp and hpc:gpu_job_since:timestamp read their own
+# previous value (last_over_time [2h]), so they carry forward without limit.
+# They start when the rules are first loaded, and restart if Prometheus is down
+# more than 2 h. The interval must stay 1m: GPU-hours = samples / 60.
+# Every rule keeps the "cluster" target label (if set), so several clusters can
+# share one Prometheus.
+groups:
+  - name: hexporter-recording
+    interval: 1m
+    rules:"""]
+    out.append(rule("hpc:gpu_job_since:timestamp", f"""
+(
+  min by (cluster, instance, gpu_uuid, jobid) (last_over_time(hpc:gpu_job_since:timestamp[2h]))
+  or
+  min by (cluster, instance, gpu_uuid, jobid) (timestamp({J}))
+)
+and on (cluster, instance, gpu_uuid, jobid) {J}""",
+        "When each job got each GPU (unix time). Kept while the job holds the GPU."))
+    out.append(rule("hpc:gpu_allocated:bool", f"count by (cluster, instance, gpu_uuid, user) ({J}) > bool 0",
+        "1 per minute while a user's job holds the GPU. GPU-hours = sum_over_time(...) / 60."))
+    for t in THRESHOLDS:
+        out.append(rule("hpc:gpu_last_busy:timestamp", f"""
+(
+  max by (cluster, instance, gpu_uuid) (timestamp({U} > {t}))
+  or
+  max by (cluster, instance, gpu_uuid) (last_over_time(hpc:gpu_last_busy:timestamp{{threshold="{t}"}}[2h]))
+  or
+  max by (cluster, instance, gpu_uuid) ({U} * 0)
+)
+and on (cluster, instance, gpu_uuid) {U}""",
+            f"util > {t} %: last time the GPU was busy (unix time; 0 = not since the rules started).", t))
+        out.append(rule("hpc:gpu_job_idle:seconds", f"""
+time()
+- (
+    (hpc:gpu_job_since:timestamp + on (cluster, instance, gpu_uuid) group_left () hpc:gpu_last_busy:timestamp{{threshold="{t}"}})
+    + abs(hpc:gpu_job_since:timestamp - on (cluster, instance, gpu_uuid) group_left () hpc:gpu_last_busy:timestamp{{threshold="{t}"}})
+  ) / 2""",
+            f"util <= {t} %: seconds each (GPU, job) has been idle =\n"
+            "now - max(job got the GPU, GPU last busy). max(a, b) = (a + b + |a - b|) / 2.", t))
+        out.append(rule("hpc:gpu_allocated_idle:bool", f"""
+count by (cluster, instance, gpu_uuid, user) ({J}) * 0
++ on (cluster, instance, gpu_uuid) group_left ()
+(max by (cluster, instance, gpu_uuid) ({U}) <= bool {t})""",
+            f"util <= {t} %: 1 per minute while held by a job and idle, 0 while held and busy.", t))
+        out.append(rule("hpc:gpu_state", f"""
+max by (cluster, instance, gpu_uuid, gpu_index) ({U} > bool {t}) * 2
++ on (cluster, instance, gpu_uuid) group_left ()
+(
+  clamp_max(count by (cluster, instance, gpu_uuid) ({J}{{jobid!="none"}}), 1)
+  or
+  count by (cluster, instance, gpu_uuid) ({U}) * 0
+)""",
+            f"util > {t} %: 0 free, 1 idle (PBS job), 2 busy outside PBS, 3 busy (PBS job).", t))
+    return "\n\n".join(out) + "\n"
+
+
+if len(sys.argv) > 1 and sys.argv[1] == "rules":
+    sys.stdout.write(rules())
+else:
+    print(json.dumps(dash, indent=2, ensure_ascii=False))

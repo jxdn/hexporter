@@ -1,2 +1,5 @@
 hpc-exporter
 dist/
+
+# Prometheus target files hold real node IPs: keep them local
+deploy/prometheus/targets/hexporter-*.yml

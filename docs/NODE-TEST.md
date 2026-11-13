@@ -1,4 +1,4 @@
-# Installing hexporter v1.0.0 on a GPU node (systemd, no Docker)
+# Installing hexporter v1.0.1 on a GPU node (systemd, no Docker)
 
 Three files in one folder (on borealis: `/home/svu/zidni`):
 
@@ -69,6 +69,16 @@ Expected on borealis-36 (job 9025, vLLM on 8× B200):
 
 The service runs as root (to read every job's environment and the mount statistics), at low priority (`Nice=10`, idle I/O), and is capped at 512 MB memory and 256 threads. It only reads `/proc`, `/sys` and the mount table, and calls `nvidia-smi`, `dcgmi`, `ibstat` and `systemctl is-active`. It runs in the host's mount namespace, so NFS, dpc and autofs mounts look exactly as they do on the host.
 
+## 5. More nodes
+
+On each new GPU node run the same install as root (it is safe to rerun). With pdsh on Bright, from a root shell on the head node:
+
+```bash
+pdsh -w borealis-[37-40] 'bash /home/svu/zidni/setup-hpc-exporter.sh install' | dshbak -c
+```
+
+Nodes with extra mounts (e.g. `/scratch_aisg`) need `EXPECTED_MOUNTS=...` in front, as in step 2. Then add each node to the Prometheus targets file (`/etc/prometheus/targets/hexporter-*.yml`, see `deploy/prometheus/targets/`); Prometheus picks it up within a minute.
+
 ## If something fails
 
 | Symptom | Likely cause / fix |
@@ -89,4 +99,4 @@ Cross-check scripts (read-only, in the repo's `tools/`): `test-gpu-job-map.sh`, 
 
 ### Docker instead
 
-If Docker with the NVIDIA Container Toolkit is available: `gunzip -c hpc-exporter-1.0.0-amd64.tar.gz | docker load`, then `docker compose up -d` with the repo's `docker-compose.yml`. The same `verify-metrics.sh` applies.
+If Docker with the NVIDIA Container Toolkit is available: `gunzip -c hpc-exporter-1.0.1-amd64.tar.gz | docker load`, then `docker compose up -d` with the repo's `docker-compose.yml`. The same `verify-metrics.sh` applies.

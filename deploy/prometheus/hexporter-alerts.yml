@@ -4,6 +4,8 @@
 #     - /etc/prometheus/rules/hexporter-alerts.yml
 # Check:  promtool check rules hexporter-alerts.yml
 #
+# Rules keep the "cluster" label, so alerts say which cluster when several share one Prometheus.
+#
 # Idle = a job holds the GPU and its utilization stayed at 0 % for the whole
 # window, and the job has held that GPU for the whole window (so a job that is
 # still starting or loading a model is not flagged).
@@ -13,13 +15,13 @@ groups:
     rules:
       - alert: GPUAllocatedIdle
         expr: |
-          max by (instance, gpu_uuid, gpu_index, jobid, user, queue, job_name, framework) (
+          max by (cluster, instance, gpu_uuid, gpu_index, jobid, user, queue, job_name, framework) (
             (max without (source) (hpc_gpu_job_info{jobid!="none"}))
-            * on (instance, gpu_uuid) group_left ()
+            * on (cluster, instance, gpu_uuid) group_left ()
             (max_over_time(hpc_gpu_utilization_percent[1h]) == 0)
           )
-          and on (instance, gpu_uuid, jobid)
-          (sum by (instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[1h])) >= 55)
+          and on (cluster, instance, gpu_uuid, jobid)
+          (sum by (cluster, instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[1h])) >= 55)
         labels:
           severity: info
         annotations:
@@ -32,16 +34,16 @@ groups:
       - alert: PBSJobAllGPUsIdle
         expr: |
           (
-            count by (jobid, user, queue, job_name) (
+            count by (cluster, jobid, user, queue, job_name) (
               (max without (source) (hpc_gpu_job_info{jobid!="none"}))
-              * on (instance, gpu_uuid) group_left ()
+              * on (cluster, instance, gpu_uuid) group_left ()
               (max_over_time(hpc_gpu_utilization_percent[2h]) == 0)
-              and on (instance, gpu_uuid, jobid)
-              (sum by (instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[2h])) >= 110)
+              and on (cluster, instance, gpu_uuid, jobid)
+              (sum by (cluster, instance, gpu_uuid, jobid) (count_over_time(hpc_gpu_job_info[2h])) >= 110)
             )
           )
-          == on (jobid, user, queue, job_name)
-          count by (jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{jobid!="none"}))
+          == on (cluster, jobid, user, queue, job_name)
+          count by (cluster, jobid, user, queue, job_name) (max without (source) (hpc_gpu_job_info{jobid!="none"}))
         labels:
           severity: warning
         annotations:

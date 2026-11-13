@@ -1,0 +1,114 @@
+# promtool test rules deploy/prometheus/tests/hexporter-recording.test.yml
+# (or: make rules-test)
+#
+# One node (cluster="borealis": every rule must keep that label), three GPUs,
+# 1-minute scrapes, t = 0 .. 60 min:
+#   g0: PBS job 1 (alice) from 10 min; 50 % until 30 min, then 3 %.
+#   g1: PBS job 2 (bob) from 0 to 20 min, then free; always 0 %.
+#   g2: no job, 0 % the whole time.
+rule_files:
+  - ../hexporter-recording.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'hpc_gpu_utilization_percent{cluster="borealis", instance="n1:9009", job="hexporter", gpu_uuid="g0", gpu_index="0"}'
+        values: '50x30 3x29'
+      - series: 'hpc_gpu_utilization_percent{cluster="borealis", instance="n1:9009", job="hexporter", gpu_uuid="g1", gpu_index="1"}'
+        values: '0x60'
+      - series: 'hpc_gpu_utilization_percent{cluster="borealis", instance="n1:9009", job="hexporter", gpu_uuid="g2", gpu_index="2"}'
+        values: '0x60'
+      - series: 'hpc_gpu_job_info{cluster="borealis", instance="n1:9009", job="hexporter", gpu_uuid="g0", gpu_index="0", jobid="1", user="alice", source="environ"}'
+        values: '_x10 1x50'
+      - series: 'hpc_gpu_job_info{cluster="borealis", instance="n1:9009", job="hexporter", gpu_uuid="g1", gpu_index="1", jobid="2", user="bob", source="environ"}'
+        values: '1x20'
+
+    promql_expr_test:
+      # g0: job 1 got it at 10 min. g1's job 2 ended at 20 min (+5 min staleness): gone.
+      - expr: hpc:gpu_job_since:timestamp
+        eval_time: 60m
+        exp_samples:
+          - labels: 'hpc:gpu_job_since:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g0", jobid="1"}'
+            value: 600
+
+      # g0 is > 0 % at 60 min, > 5 % last at 30 min; g1/g2 never busy (0).
+      - expr: hpc:gpu_last_busy:timestamp{threshold=~"0|5"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g0", threshold="0"}'
+            value: 3600
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g0", threshold="5"}'
+            value: 1800
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g1", threshold="0"}'
+            value: 0
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g1", threshold="5"}'
+            value: 0
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g2", threshold="0"}'
+            value: 0
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g2", threshold="5"}'
+            value: 0
+
+      # Idle for: at 0 % threshold job 1 is busy (0 s); at 5 % idle since 30 min (1800 s).
+      - expr: hpc:gpu_job_idle:seconds{threshold=~"0|5"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'hpc:gpu_job_idle:seconds{cluster="borealis", instance="n1:9009", gpu_uuid="g0", jobid="1", threshold="0"}'
+            value: 0
+          - labels: 'hpc:gpu_job_idle:seconds{cluster="borealis", instance="n1:9009", gpu_uuid="g0", jobid="1", threshold="5"}'
+            value: 1800
+
+      # A job that never ran anything is idle since it got the GPU, not since the rules started.
+      - expr: hpc:gpu_job_idle:seconds{threshold="0"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'hpc:gpu_job_idle:seconds{cluster="borealis", instance="n1:9009", gpu_uuid="g0", jobid="1", threshold="0"}'
+            value: 0
+          - labels: 'hpc:gpu_job_idle:seconds{cluster="borealis", instance="n1:9009", gpu_uuid="g1", jobid="2", threshold="0"}'
+            value: 900
+
+      # last busy keeps going past the raw data: g0 stays at 1800 for 5 % after 30 min.
+      - expr: hpc:gpu_last_busy:timestamp{gpu_uuid="g0", threshold="10"}
+        eval_time: 45m
+        exp_samples:
+          - labels: 'hpc:gpu_last_busy:timestamp{cluster="borealis", instance="n1:9009", gpu_uuid="g0", threshold="10"}'
+            value: 1800
+
+      # GPU-hours. Window edges are picked where the value doesn't change, because
+      # Prometheus 2.x includes the sample at the window's left edge and 3.x doesn't.
+      # alice held g0 from 10 to 60 min: 51 one-minute samples.
+      - expr: sum by (user) (sum_over_time(hpc:gpu_allocated:bool{user="alice"}[55m])) / 60
+        eval_time: 60m
+        exp_samples:
+          - labels: '{user="alice"}'
+            value: 0.85
+
+      # Held and idle at 5 %: alice 31..60 min = 30 samples (the 30-min edge sample is 0).
+      - expr: sum by (user) (sum_over_time(hpc:gpu_allocated_idle:bool{user="alice", threshold="5"}[30m])) / 60
+        eval_time: 60m
+        exp_samples:
+          - labels: '{user="alice"}'
+            value: 0.5
+
+      # State at 60 min, threshold 5: g0 idle with job (1), g1 free (0), g2 free (0).
+      - expr: hpc:gpu_state{threshold="5"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g0", gpu_index="0", threshold="5"}'
+            value: 1
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g1", gpu_index="1", threshold="5"}'
+            value: 0
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g2", gpu_index="2", threshold="5"}'
+            value: 0
+
+      # threshold 0 at 20 min: g0 busy with job (3), g1 idle with job (1).
+      - expr: hpc:gpu_state{threshold="0"}
+        eval_time: 20m
+        exp_samples:
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g0", gpu_index="0", threshold="0"}'
+            value: 3
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g1", gpu_index="1", threshold="0"}'
+            value: 1
+          - labels: 'hpc:gpu_state{cluster="borealis", instance="n1:9009", gpu_uuid="g2", gpu_index="2", threshold="0"}'
+            value: 0

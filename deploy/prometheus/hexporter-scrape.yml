@@ -1,0 +1,18 @@
+# Prometheus scrape job for hexporter on many GPU nodes. Merge into prometheus.yml.
+#
+# Nodes are listed in target files (file_sd), so adding a node = adding two lines
+# to a targets file; Prometheus picks it up within refresh_interval, no reload.
+# The job name must stay "hexporter": the dashboard and alerts filter on it.
+
+rule_files:
+  - /etc/prometheus/rules/hexporter-recording.yml   # needed by the dashboard
+  - /etc/prometheus/rules/hexporter-alerts.yml
+
+scrape_configs:
+  - job_name: hexporter
+    scrape_interval: 60s
+    scrape_timeout: 30s          # a hung NFS mount costs up to FS_STAT_TIMEOUT (5 s)
+    # Each target sets instance to the node name (e.g. borealis-36) instead of "IP:9009".
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/hexporter-*.yml']
+        refresh_interval: 1m

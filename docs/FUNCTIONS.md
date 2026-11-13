@@ -1,4 +1,4 @@
-# hexporter v1.0.0: functions reference and roadmap
+# hexporter v1.0.1: functions reference and roadmap
 
 This file lists everything hexporter v1 does: each collector, each Go function, every metric and every setting. The last section lists the planned future functions.
 
@@ -71,10 +71,11 @@ This file lists everything hexporter v1 does: each collector, each Go function, 
 ### `collectors/jobmap.go`: PBS job discovery
 | Function | What it does |
 |---|---|
-| `scanJobs()` | Walks `/proc`, reads each environ, and collects jobs (`PBS_JOBID`, user, queue, job name, `CUDA_VISIBLE_DEVICES`), plus each job's PBS cgroup token. Counts unreadable processes. |
+| `scanJobs()` | Walks `/proc`, reads each environ, and collects jobs (`PBS_JOBID`, user, queue, job name, `CUDA_VISIBLE_DEVICES`), plus each job's PBS cgroup token. Counts processes whose environ can't be read; processes that exit during the scan are not counted (since 1.0.1). |
 | `jobScan.jobForPID(pid)` | Finds a process's job: **environ** → **PBS cgroup** (`/pbs_jobs.service/jobs/9025.1/` → job 9025) → **parent processes** (up to 64 levels). Returns how it matched. |
 | `userForPID(pid)` | `USER` from environ, else `uid:<n>`. |
 | `readEnviron(pid)` | Parses `/proc/<pid>/environ`. |
+| `processGone(pid, err)` | After a failed read: true if the process has exited (`ESRCH`, or `/proc/<pid>` is gone). |
 | `cgroupToken(pid)` | PBS job token from `/proc/<pid>/cgroup`. |
 | `procStatusField / procPPID / procUID / procComm / procCmdline` | Read `/proc/<pid>/status` and `/proc/<pid>/cmdline`. |
 | `visibleDevices(cvd, byIndex, known)` | `CUDA_VISIBLE_DEVICES` → GPU UUIDs (accepts UUIDs or indices). |
@@ -202,7 +203,7 @@ This file lists everything hexporter v1 does: each collector, each Go function, 
 
 ```bash
 make test        # unit tests
-make package     # bare metal: dist/hpc-exporter-1.0.0-linux-amd64.tar.gz (binary + setup-hpc-exporter.sh)
+make package     # bare metal: dist/hpc-exporter-1.0.1-linux-amd64.tar.gz (binary + setup-hpc-exporter.sh)
 make image-cross && make save   # Docker image tarball (Apple Silicon build host)
 
 # on the node (root), with hpc-exporter next to the script
@@ -230,7 +231,7 @@ Test scripts (read-only, run on a node before deploying) are in `tools/`: `test-
 | # | Function | Why | Effort |
 |---|---|---|---|
 | 1 | **PBS job details via `qstat -f -F json`** (cached 60 s): `project`, `walltime`, `ngpus`, `start_time` | Group usage by project (e.g. `CFP05-SF-000`) and check walltime | S |
-| 2 | ~~Grafana dashboard + alert rules~~ **done**: `deploy/grafana/`, `deploy/prometheus/`. Left: recording rules to make the 24 h idle subqueries cheaper on large clusters | GPU per job/user, idle detection, XID/ECC, hung mounts, NFS latency | S |
+| 2 | ~~Grafana dashboard + alert rules + recording rules~~ **done**: `deploy/grafana/`, `deploy/prometheus/` (`hpc:*` series for idle time, GPU-hours, state; multi-node `file_sd` scrape job) | GPU per job/user, idle detection, XID/ECC, hung mounts, NFS latency | S |
 | 3 | **Per-job GPU summary at job end** (avg util, peak mem, GPU-hours, energy, main pipe) → CSV/DB | History beyond Prometheus retention; usage reports | M |
 | 4 | **go-dcgm / NVML bindings** instead of exec | One call, no 2 s dmon wait, per-process SM utilization | M (cgo) |
 | 5 | **MIG support**: `gpu_instance_id` / `mig_uuid` labels | If any node partitions B200s | S |

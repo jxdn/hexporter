@@ -1,8 +1,8 @@
-VERSION ?= 1.0.0
+VERSION ?= 1.0.1
 IMAGE   ?= hpc-exporter:$(VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test linux package image image-cross save clean
+.PHONY: build test linux package image image-cross save dashboard rules-test clean
 
 build:            ## local binary for this machine
 	go build -ldflags "$(LDFLAGS)" -o hpc-exporter .
@@ -34,6 +34,16 @@ image-cross: linux ## Apple Silicon / no buildx: compile locally, package runtim
 save:             ## image tarball to copy to nodes without a registry
 	docker save $(IMAGE) | gzip > dist/hpc-exporter-$(VERSION)-amd64.tar.gz
 	@echo "on the node: gunzip -c hpc-exporter-$(VERSION)-amd64.tar.gz | docker load"
+
+PROMTOOL ?= docker run --rm -v $(CURDIR)/deploy/prometheus:/w -w /w --entrypoint promtool prom/prometheus
+
+dashboard:        ## regenerate the Grafana dashboard and the recording rules it needs
+	python3 deploy/grafana/gen_dashboard.py > deploy/grafana/hexporter-gpu.json
+	python3 deploy/grafana/gen_dashboard.py rules > deploy/prometheus/hexporter-recording.yml
+
+rules-test:       ## promtool: check alert + recording rules, run the recording-rule unit tests
+	$(PROMTOOL) check rules hexporter-recording.yml hexporter-alerts.yml
+	$(PROMTOOL) test rules tests/hexporter-recording.test.yml
 
 clean:
 	rm -rf hpc-exporter dist/

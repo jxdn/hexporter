@@ -1,4 +1,4 @@
-# hexporter (hpc-exporter) v1.0.0
+# hexporter (hpc-exporter) v1.0.1
 
 Prometheus exporter for HPC GPU nodes running PBS. On `:9009/metrics` it exposes:
 
@@ -20,8 +20,8 @@ All functions, metrics, settings and the roadmap: **[docs/FUNCTIONS.md](docs/FUN
 make test            # unit tests
 make image-cross     # Apple Silicon / no buildx: compile locally + package amd64 image
 # or, on an x86_64 build host:  make image
-make package         # dist/hpc-exporter-1.0.0-linux-amd64.tar.gz: binary + setup-hpc-exporter.sh (systemd, no Docker)
-make save            # dist/hpc-exporter-1.0.0-amd64.tar.gz: Docker image for nodes without a registry
+make package         # dist/hpc-exporter-1.0.1-linux-amd64.tar.gz: binary + setup-hpc-exporter.sh (systemd, no Docker)
+make save            # dist/hpc-exporter-1.0.1-amd64.tar.gz: Docker image for nodes without a registry
 ```
 
 On a GPU node, **systemd (no Docker)**: put `hpc-exporter` and [setup-hpc-exporter.sh](deploy/systemd/setup-hpc-exporter.sh) in one folder, then as root:
@@ -34,7 +34,7 @@ bash verify-metrics.sh                 # tools/verify-metrics.sh
 Or **Docker**:
 
 ```bash
-gunzip -c hpc-exporter-1.0.0-amd64.tar.gz | docker load
+gunzip -c hpc-exporter-1.0.1-amd64.tar.gz | docker load
 docker compose up -d
 ```
 
@@ -42,14 +42,14 @@ Step by step: [docs/NODE-TEST.md](docs/NODE-TEST.md).
 
 ## Prometheus
 
+Use [deploy/prometheus/hexporter-scrape.yml](deploy/prometheus/hexporter-scrape.yml): job `hexporter` (the dashboard and alerts filter on that name), 60 s interval, 30 s timeout. Nodes come from target files, so adding a node means adding two lines to a targets file (`hexporter-<cluster>.yml`, format in [targets/example.yml](deploy/prometheus/targets/example.yml); real target files hold node IPs and are gitignored); Prometheus picks it up within a minute, with no reload:
+
 ```yaml
-scrape_configs:
-  - job_name: hpc_node
-    scrape_interval: 60s
-    scrape_timeout: 30s
-    static_configs:
-      - targets: ['<node>:9009']
+- targets: ['<node-ip>:9009']
+  labels: {instance: borealis-36, cluster: borealis}  # node name shown in Grafana; cluster for a shared Prometheus
 ```
+
+Also load both rule files: [hexporter-recording.yml](deploy/prometheus/hexporter-recording.yml) (the dashboard needs it) and [hexporter-alerts.yml](deploy/prometheus/hexporter-alerts.yml).
 
 ## Node requirements
 
@@ -77,17 +77,16 @@ Full list: [docs/FUNCTIONS.md §4](docs/FUNCTIONS.md#4-configuration).
 
 ## Grafana dashboard and alerts
 
+- **Recording rules** [deploy/prometheus/hexporter-recording.yml](deploy/prometheus/hexporter-recording.yml), **required by the dashboard.** Every minute Prometheus saves small per-GPU series (`hpc:gpu_last_busy:timestamp`, `hpc:gpu_job_since:timestamp`, `hpc:gpu_job_idle:seconds`, `hpc:gpu_allocated:bool`, `hpc:gpu_allocated_idle:bool`, `hpc:gpu_state`). The dashboard reads those instead of scanning 24 h of raw data on every refresh, so it stays fast with many nodes.
 - **Dashboard** [deploy/grafana/hexporter-gpu.json](deploy/grafana/hexporter-gpu.json): Grafana → Dashboards → New → Import → upload the file → pick your Prometheus.
   - **Idle detection:** allocated, idle and free GPUs; idle GPU-hours; a jobs table (GPUs held, idle GPUs, how long all of them have been idle); an idle-GPU list; and a GPU state timeline (Free, Idle (job), Busy, Busy outside PBS). Use *Idle after (min)* and *Idle if util ≤ (%)* at the top to tune it.
-  - **"Idle for"** is the shorter of *time since the GPU was last busy* and *time since the job got the GPU*, so a job still loading a model isn't flagged. It looks back 24 h.
+  - **"Idle for"** is the shorter of *time since the GPU was last busy* and *time since the job got the GPU*, so a job still loading a model isn't flagged. There is no 24 h cap, but it counts from when the recording rules were first loaded (and restarts if Prometheus is down for more than 2 h).
   - Other sections: who uses the GPUs, DCGM compute pipes per job, GPU health, shared filesystems, node.
-- **Alerts** [deploy/prometheus/hexporter-alerts.yml](deploy/prometheus/hexporter-alerts.yml):
+- **Alerts** [deploy/prometheus/hexporter-alerts.yml](deploy/prometheus/hexporter-alerts.yml) (work without the recording rules):
   - GPU held by a job at 0 % for 1 h, or every GPU of a job at 0 % for 2 h
   - XID, uncorrected ECC, row-remap failure, thermal throttling, DCGM down
   - exporter down, hung or missing mount, pbs_mom down
-
-  Add it under `rule_files:` in `prometheus.yml`.
-- Regenerate the dashboard after editing [gen_dashboard.py](deploy/grafana/gen_dashboard.py): `python3 deploy/grafana/gen_dashboard.py > deploy/grafana/hexporter-gpu.json`.
+- After editing [gen_dashboard.py](deploy/grafana/gen_dashboard.py): `make dashboard` (writes the dashboard and the recording rules) and `make rules-test` (promtool checks and unit tests, via the `prom/prometheus` image).
 
 ## Example queries
 
